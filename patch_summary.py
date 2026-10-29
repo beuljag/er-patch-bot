@@ -252,18 +252,14 @@ def _bug_counts(content, section_title):
 
 
 def to_messages(lines, footer=""):
-    """2000자 제한에 맞춰 여러 메시지로 분할. 섹션 중간에서 끊기면 제목을 다시 붙인다."""
-    messages, buf, section = [], "", None
+    """2000자 제한에 맞춰 줄 단위로 여러 메시지로 분할."""
+    messages, buf = [], ""
     for line in lines + ([footer] if footer else []):
-        if line.startswith("## "):
-            section = line
         line = line[:DISCORD_LIMIT]
         if len(buf) + len(line) + 1 > DISCORD_LIMIT:
             messages.append(buf.rstrip())
             buf = ""
-            if section and not line.startswith("## ") and line != footer:
-                buf = f"{section} (이어서)\n"
-        if not line and (not buf or buf.endswith(" (이어서)\n")):
+        if not line and not buf:
             continue  # 메시지 첫머리의 빈 줄은 생략
         buf += line + "\n"
     if buf.strip():
