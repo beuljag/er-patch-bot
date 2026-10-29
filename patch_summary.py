@@ -215,8 +215,20 @@ def summarize(html, version=None):
         if not body:
             continue
         out.append(f"## {title}")
-        out += body
+        prev = None
+        for line in body:
+            # 대상(실험체/아이템)이 바뀔 때마다 빈 줄로 구분
+            if _is_entry(line) or line.startswith("**"):
+                if prev is not None and _is_entry(prev):
+                    out.append("")
+            out.append(line)
+            prev = line
     return out
+
+
+def _is_entry(line):
+    """'이름 - 변경' 형태의 대상 줄인지 (제목/글머리표/분류 제목 제외)."""
+    return bool(line) and not line.startswith(("#", "-", " ", "**"))
 
 
 def _bug_counts(content, section_title):
@@ -251,6 +263,8 @@ def to_messages(lines, footer=""):
             buf = ""
             if section and not line.startswith("## ") and line != footer:
                 buf = f"{section} (이어서)\n"
+        if not line and (not buf or buf.endswith(" (이어서)\n")):
+            continue  # 메시지 첫머리의 빈 줄은 생략
         buf += line + "\n"
     if buf.strip():
         messages.append(buf.rstrip())
