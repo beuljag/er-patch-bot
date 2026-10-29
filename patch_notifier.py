@@ -131,7 +131,7 @@ def fetch_steam():
         posts.append({
             "id": f"steam:{item['gid']}",
             "title": title,
-            "url": item.get("url"),
+            "url": f"https://store.steampowered.com/news/app/{STEAM_APP_ID}/view/{item['gid']}",
             "image": f"https://clan.fastly.steamstatic.com/images{img.group(1)}" if img else None,
             "date": item.get("date"),
             "source": "Steam",

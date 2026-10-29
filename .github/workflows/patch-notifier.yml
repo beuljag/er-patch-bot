@@ -5,10 +5,11 @@ on:
     - cron: "*/10 * * * *"  # 10분마다 (GitHub 사정에 따라 몇 분 늦을 수 있음)
   workflow_dispatch:        # Actions 탭에서 수동 실행
     inputs:
-      test:
-        description: "전송 없이 감지된 글 목록만 출력"
-        type: boolean
-        default: false
+      mode:
+        description: "once=새 글 확인 / test=목록만 출력 / send-latest=최신 패치노트 1개 바로 전송"
+        type: choice
+        options: [once, test, send-latest]
+        default: once
 
 permissions:
   contents: write  # state.json(이미 보낸 글 기록) 저장용
@@ -35,7 +36,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           PATCH_SOURCES: ${{ vars.PATCH_SOURCES || 'official,steam' }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
-        run: python patch_notifier.py ${{ inputs.test && '--test' || '--once' }}
+        run: python patch_notifier.py --${{ inputs.mode || 'once' }}
 
       - name: 기록 저장
         run: |
