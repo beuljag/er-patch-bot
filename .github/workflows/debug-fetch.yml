@@ -1,0 +1,17 @@
+name: debug-fetch
+on: workflow_dispatch
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
+          mkdir out
+          curl -sL -A "$UA" -H "Accept-Language: ko-KR" "https://playeternalreturn.com/posts/news/3924?hl=ko-KR" -o out/post.html
+          curl -sL -A "$UA" -H "Accept-Language: ko-KR" "https://playeternalreturn.com/posts/news?categoryPath=patchnote&hl=ko-KR" -o out/list.html
+          curl -sL "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?appid=1049590&count=5&feeds=steam_community_announcements" -o out/steam.json
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pages
+          path: out
