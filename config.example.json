@@ -1,0 +1,6 @@
+{
+  "webhook_url": "https://discord.com/api/webhooks/여기에_웹훅_주소",
+  "sources": ["official", "steam"],
+  "check_interval_minutes": 10,
+  "mention": ""
+}

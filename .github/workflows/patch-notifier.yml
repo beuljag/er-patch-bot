@@ -1,0 +1,41 @@
+name: 이터널 리턴 패치노트 알림
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"  # 10분마다 (GitHub 사정에 따라 몇 분 늦을 수 있음)
+  workflow_dispatch:        # Actions 탭에서 수동 실행
+
+permissions:
+  contents: write  # state.json(이미 보낸 글 기록) 저장용
+
+concurrency:
+  group: patch-notifier
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: 패치노트 확인 및 전송
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PATCH_SOURCES: ${{ vars.PATCH_SOURCES || 'official,steam' }}
+          DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
+        run: python patch_notifier.py --once
+
+      - name: 기록 저장
+        run: |
+          [ -f state.json ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "패치노트 기록 업데이트" && git push)
