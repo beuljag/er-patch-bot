@@ -34,7 +34,7 @@ jobs:
       - name: 패치노트 확인 및 전송
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          PATCH_SOURCES: ${{ vars.PATCH_SOURCES || 'official,steam' }}
+          PATCH_SOURCES: ${{ vars.PATCH_SOURCES || 'official' }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
         run: python patch_notifier.py --${{ inputs.mode || 'once' }}
 

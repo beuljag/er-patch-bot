@@ -23,6 +23,8 @@ from pathlib import Path
 
 import requests
 
+import patch_summary
+
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 STATE_PATH = BASE_DIR / "state.json"
@@ -41,7 +43,7 @@ TIMEOUT = 20
 
 DEFAULT_CONFIG = {
     "webhook_url": "",
-    "sources": ["official", "steam"],
+    "sources": ["official"],
     "check_interval_minutes": 10,
     "mention": "",  # 예: "@everyone" 또는 "<@&역할ID>"
 }
@@ -93,7 +95,7 @@ def fetch_official():
     posts = []
     for post_id in ids[:5]:
         url = OFFICIAL_POST_URL.format(id=post_id)
-        title, image = None, None
+        title, image, page = None, None, None
         try:
             page = requests.get(url, headers=HEADERS, timeout=TIMEOUT).text
             title = _meta(page, "og:title")
@@ -107,6 +109,7 @@ def fetch_official():
             "image": image,
             "date": None,
             "source": "공식 홈페이지",
+            "html": page,
         })
     return posts
 
@@ -144,7 +147,44 @@ SOURCES = {"official": fetch_official, "steam": fetch_steam}
 
 # ---------------------------------------------------------------- 디스코드 전송
 
+def _post_webhook(webhook_url, payload):
+    for _ in range(3):
+        r = requests.post(webhook_url, json=payload, timeout=TIMEOUT)
+        if r.status_code == 429:  # 레이트 리밋
+            time.sleep(float(r.json().get("retry_after", 2)))
+            continue
+        r.raise_for_status()
+        return
+    raise RuntimeError("디스코드 전송 실패 (레이트 리밋)")
+
+
+def summary_messages(post):
+    """공식 패치노트면 마크다운 요약 메시지 목록, 아니면 None."""
+    if not post.get("html"):
+        return None
+    try:
+        lines = patch_summary.summarize(post["html"])
+    except Exception as e:
+        log(f"요약 실패, 기본 알림으로 전송: {e}")
+        return None
+    if not lines or len(lines) <= 1:
+        return None
+    return patch_summary.to_messages(lines, f"[공식 패치노트 원문](<{post['url']}>)")
+
+
 def send_to_discord(webhook_url, post, mention=""):
+    messages = summary_messages(post)
+    if messages:
+        for i, text in enumerate(messages):
+            payload = {"username": "이터널 리턴 패치 알림", "content": text,
+                       "allowed_mentions": {"parse": []}}
+            if i == 0 and mention:
+                payload["content"] = f"{mention}\n{text}"
+                payload["allowed_mentions"] = {"parse": ["everyone", "roles", "users"]}
+            _post_webhook(webhook_url, payload)
+            time.sleep(1)
+        return
+
     embed = {
         "title": post["title"][:256],
         "url": post["url"],
@@ -161,15 +201,7 @@ def send_to_discord(webhook_url, post, mention=""):
     if mention:
         payload["content"] = mention
         payload["allowed_mentions"] = {"parse": ["everyone", "roles", "users"]}
-
-    for _ in range(3):
-        r = requests.post(webhook_url, json=payload, timeout=TIMEOUT)
-        if r.status_code == 429:  # 레이트 리밋
-            time.sleep(float(r.json().get("retry_after", 2)))
-            continue
-        r.raise_for_status()
-        return
-    raise RuntimeError("디스코드 전송 실패 (레이트 리밋)")
+    _post_webhook(webhook_url, payload)
 
 
 # ---------------------------------------------------------------- 메인 로직
@@ -223,6 +255,9 @@ def main():
                 print("  (패치노트를 찾지 못함)")
             for p in posts or []:
                 print(f"  {p['title']}\n    {p['url']}")
+            if posts and summary_messages(posts[0]):
+                print("\n--- 최신 글 요약 미리보기 ---")
+                print("\n\n".join(summary_messages(posts[0])))
         return
 
     if not config["webhook_url"]:
