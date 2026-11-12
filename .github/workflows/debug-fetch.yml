@@ -7,7 +7,7 @@ jobs:
       - run: |
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
           mkdir out
-          for id in 3948 3949 3950; do
+          for id in 3924 3948 3949 3950; do
             curl -sL -A "$UA" -H "Accept-Language: ko-KR" "https://playeternalreturn.com/posts/news/$id?hl=ko-KR" -o out/$id.html
           done
           ls -la out
