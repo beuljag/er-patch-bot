@@ -1,0 +1,17 @@
+name: debug-fetch
+on: workflow_dispatch
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36"
+          mkdir out
+          for id in 3948 3949 3950; do
+            curl -sL -A "$UA" -H "Accept-Language: ko-KR" "https://playeternalreturn.com/posts/news/$id?hl=ko-KR" -o out/$id.html
+          done
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pages
+          path: out
