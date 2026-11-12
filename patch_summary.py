@@ -25,6 +25,9 @@ NO_TAG = re.compile(r"\bNP\b|할인\)")
 
 # '옷', '팔/장식', '활' 같은 분류 제목이 나올 수 있는 섹션
 CATEGORY_SECTIONS = re.compile(r"무기|방어구|아이템")
+# 설정값(화살표 없는 수치)에도 버프/너프를 붙이는 섹션
+BALANCE_SECTIONS = re.compile(r"실험체|무기|방어구|아이템|전술 스킬|특성")
+HEADING = "\x01"  # 소제목 줄 표시 (출력 전에 '### ' 또는 '- ' 로 바뀜)
 NEW_OR_REMOVED = re.compile(r"\((?:신규|삭제)[^)]*\)")
 # 화살표 없는 설정값이라도 남길 만한 단위
 UNIT = re.compile(r"\d\s*(?:%|초|스택|중첩|m\b|레벨|배|칸|개)")
@@ -158,16 +161,47 @@ def classify(comment, changes):
     return None
 
 
-def _entry(name, changes, comment=None):
-    tag = classify(comment, changes)
-    return f"{name} - {', '.join(changes)}" + (f"**({tag})**" if tag else "")
+def _setting_tag(change):
+    """화살표 없는 설정값의 버프/너프 ('받는 피해량 115%', '궁극기 쿨다운 감소량 30%' 등).
+
+    기준은 기본값 100% (패치노트의 '별도 표기가 없다면 100%').
+    """
+    m = re.search(r"받는 피해(?:량)? (\d+(?:\.\d+)?)%", change)
+    if m:
+        v = float(m.group(1))
+        return "너프" if v > 100 else "버프" if v < 100 else None
+    m = re.search(r"(?:입히는|주는) 피해(?:량)? (\d+(?:\.\d+)?)%", change)
+    if m:
+        v = float(m.group(1))
+        return "버프" if v > 100 else "너프" if v < 100 else None
+    if re.search(r"쿨다운 감소(?:량)? \d|\+\d|\d+\s*(?:스택|중첩)\s*획득", change):
+        return "버프"
+    return None
 
 
-def _split_item(change):
+def _tag(tag):
+    return f"**({tag})**" if tag else ""
+
+
+def _entry(name, changes, comment=None, settings=False):
+    """'이름 - 변경, 변경**(버프)**'.
+
+    settings: 화살표 없는 설정값도 버프/너프를 판단 (실험체·아이템 섹션의 모드 보정값 등).
+    판단이 항목마다 다르면 각 항목 뒤에 따로 붙인다.
+    """
+    if settings and comment is None and "신규" not in name and not any("->" in c for c in changes):
+        tags = [_setting_tag(c) for c in changes]
+        if len(set(tags)) > 1:
+            return f"{name} - " + ", ".join(c + _tag(t) for c, t in zip(changes, tags))
+        return f"{name} - {', '.join(changes)}{_tag(tags[0])}"
+    return f"{name} - {', '.join(changes)}{_tag(classify(comment, changes))}"
+
+
+def _split_item(change, settings=False):
     """'드라우프니르 스킬 증폭 75 -> 76' → '드라우프니르 - 스킬 증폭 75 -> 76'."""
     parts = STAT_START.split(change, maxsplit=1)
     if len(parts) == 2 and parts[0]:
-        return _entry(parts[0], [parts[1]])
+        return _entry(parts[0], [parts[1]], settings=settings)
     tag = classify(None, [change])
     return change + (f"**({tag})**" if tag else "")
 
@@ -196,6 +230,7 @@ class _Section:
         self.has_categories = False
         self.after_heading = False  # 바로 위가 h3 소제목이면 들여쓰기
         self.allow_categories = bool(CATEGORY_SECTIONS.search(title))
+        self.tag_settings = bool(BALANCE_SECTIONS.search(title))
 
     def emit(self, line):
         if self.category:
@@ -205,7 +240,8 @@ class _Section:
 
     def flush(self):
         if self.entity and self.entity[2]:
-            self.emit(_entry(self.entity[0], self.entity[2], self.entity[1]))
+            name, comment, changes = self.entity
+            self.emit(_entry(name, changes, comment, settings=self.tag_settings))
         self.entity = None
 
     def heading(self, el):
@@ -213,8 +249,9 @@ class _Section:
         self.category, self.in_category = None, False
         text = _text(el)
         if text:
+            # 소제목 표시: 아래에 대상 줄이 오면 '### ', 아니면 글머리표 (_append_section 에서 결정)
             indent = "  " if el.name == "h4" and self.after_heading else ""
-            self.lines.append(f"{indent}- {text}")
+            self.lines.append(f"{HEADING}{indent}{text}")
             self.after_heading = True
 
     def paragraph(self, el):
@@ -252,9 +289,9 @@ class _Section:
                 if NEW_OR_REMOVED.search(label) and not changes:
                     self.emit(f"- {label}")
                 elif changes:
-                    self.emit(_entry(label, changes))
+                    self.emit(_entry(label, changes, settings=self.tag_settings))
             elif self.in_category and _keep_leaf(label, (), strict=False):
-                self.emit(_split_item(label))
+                self.emit(_split_item(label, settings=self.tag_settings))
             elif _keep_leaf(label, (), strict=True):
                 # 특정 대상에 속하지 않은 변경(랭크 포인트 등)이라 버프/너프는 붙이지 않음
                 indent = "  " if self.after_heading else ""
@@ -312,7 +349,14 @@ def _append_section(out, section, h5):
     body = _bug_counts(h5) if re.search(r"버그", section.title) else section.finish(h5)
     out.append(f"## {section.title}")
     prev = None
-    for line in body:
+    for i, line in enumerate(body):
+        if line.startswith(HEADING):
+            # 바로 아래에 대상 줄이 오는 소제목은 굵은 제목으로, 아니면 글머리표로
+            text = line[len(HEADING):]
+            nxt = next((l for l in body[i + 1:] if l), "")
+            line = f"### {text.strip()}" if _is_entry(nxt) or nxt.startswith("**") else (
+                f"  - {text.strip()}" if text.startswith("  ") else f"- {text}"
+            )
         # 대상(실험체/아이템)이 바뀔 때마다 빈 줄로 구분
         if (_is_entry(line) or line.startswith("**")) and prev is not None and _is_entry(prev):
             out.append("")
@@ -322,7 +366,7 @@ def _append_section(out, section, h5):
 
 def _is_entry(line):
     """'이름 - 변경' 형태의 대상 줄인지 (제목/글머리표/분류 제목 제외)."""
-    return bool(line) and not line.startswith(("#", "-", " ", "**"))
+    return bool(line) and not line.startswith(("#", "-", " ", "**", HEADING))
 
 
 def _bug_counts(h5):
