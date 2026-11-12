@@ -189,12 +189,13 @@ def _entry(name, changes, comment=None, settings=False):
     settings: 화살표 없는 설정값도 버프/너프를 판단 (실험체·아이템 섹션의 모드 보정값 등).
     판단이 항목마다 다르면 각 항목 뒤에 따로 붙인다.
     """
+    head = f"**{name}** - "
     if settings and comment is None and "신규" not in name and not any("->" in c for c in changes):
         tags = [_setting_tag(c) for c in changes]
         if len(set(tags)) > 1:
-            return f"{name} - " + ", ".join(c + _tag(t) for c, t in zip(changes, tags))
-        return f"{name} - {', '.join(changes)}{_tag(tags[0])}"
-    return f"{name} - {', '.join(changes)}{_tag(classify(comment, changes))}"
+            return head + ", ".join(c + _tag(t) for c, t in zip(changes, tags))
+        return f"{head}{', '.join(changes)}{_tag(tags[0])}"
+    return f"{head}{', '.join(changes)}{_tag(classify(comment, changes))}"
 
 
 def _split_item(change, settings=False):
@@ -234,7 +235,7 @@ class _Section:
 
     def emit(self, line):
         if self.category:
-            self.lines.append(f"**{self.category}**")
+            self.lines.append(f"### {self.category}")
             self.category = None
         self.lines.append(line)
 
@@ -354,19 +355,21 @@ def _append_section(out, section, h5):
             # 바로 아래에 대상 줄이 오는 소제목은 굵은 제목으로, 아니면 글머리표로
             text = line[len(HEADING):]
             nxt = next((l for l in body[i + 1:] if l), "")
-            line = f"### {text.strip()}" if _is_entry(nxt) or nxt.startswith("**") else (
+            line = f"### {text.strip()}" if _is_entry(nxt) or nxt.startswith("### ") else (
                 f"  - {text.strip()}" if text.startswith("  ") else f"- {text}"
             )
         # 대상(실험체/아이템)이 바뀔 때마다 빈 줄로 구분
-        if (_is_entry(line) or line.startswith("**")) and prev is not None and _is_entry(prev):
+        if _is_entry(line) and prev is not None and _is_entry(prev):
             out.append("")
         out.append(line)
         prev = line
 
 
 def _is_entry(line):
-    """'이름 - 변경' 형태의 대상 줄인지 (제목/글머리표/분류 제목 제외)."""
-    return bool(line) and not line.startswith(("#", "-", " ", "**", HEADING))
+    """'**이름** - 변경' 형태의 대상 줄인지 (제목/글머리표 제외)."""
+    if line.startswith("**"):
+        return bool(re.match(r"\*\*[^*]+\*\* - ", line))
+    return bool(line) and not line.startswith(("#", "-", " ", HEADING))
 
 
 def _bug_counts(h5):
