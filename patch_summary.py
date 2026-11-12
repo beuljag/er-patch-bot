@@ -15,14 +15,30 @@ DISCORD_LIMIT = 1900  # 메시지당 2000자 제한, 여유분 확보
 # 개발자 코멘트에서 버프/너프 판단
 BUFF_WORDS = re.compile(r"상향|강화|보완|높이|높여|높입|늘려|늘립|늘어|보강|끌어올|힘을 더")
 NERF_WORDS = re.compile(r"하향|낮춰|낮추|견제(?!력)|덜어|단축|줄여|줄입|줄이|약화|리스크")
-# 수치가 낮아질수록 좋은 항목
-LOWER_BETTER = re.compile(r"쿨다운|쿨타임|재사용|소모|시전 시간|받는 피해량|받는 피해(?! 감소)|딜레이")
+# 수치가 낮아질수록 좋은 항목 ('80초마다', '1.45초 당' 처럼 주기도 포함)
+LOWER_BETTER = re.compile(
+    r"쿨다운|쿨타임|재사용|소모|시전 시간|받는 피해량|받는 피해(?! 감소)|딜레이|초\s?마다|초\s?당"
+)
 NOT_LOWER_BETTER = re.compile(r"쿨다운 감소|감소량|피해 감소")
+# 버프/너프를 붙이지 않는 변경 (상품 가격 등)
+NO_TAG = re.compile(r"\bNP\b|할인\)")
+
+# '옷', '팔/장식', '활' 같은 분류 제목이 나올 수 있는 섹션
+CATEGORY_SECTIONS = re.compile(r"무기|방어구|아이템")
+NEW_OR_REMOVED = re.compile(r"\((?:신규|삭제)[^)]*\)")
+# 화살표 없는 설정값이라도 남길 만한 단위
+UNIT = re.compile(r"\d\s*(?:%|초|스택|중첩|m\b|레벨|배|칸|개)")
+# 아이템 이름 뒤에 바로 붙는 능력치 (예: '드라우프니르 스킬 증폭 75 -> 76')
+STAT_START = re.compile(
+    r"\s(?=(?:레벨 당 )?(?:스킬 증폭|공격력|방어력|방어 관통|공격 속도|최대 체력|체력|쿨다운 감소|"
+    r"치명타|이동 속도|생명력 흡수|주는 회복|기본 공격 증폭)\b)"
+)
 
 
 def _text(el):
     s = el.get_text("") if isinstance(el, Tag) else str(el)
-    s = s.replace("\xa0", " ").replace("→", "->")
+    s = s.replace("\xa0", " ").replace("​", "").replace("→", "->")
+    s = s.replace("[img]", "")
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -36,20 +52,43 @@ def _sub_list(li):
     return li.find(["ul", "ol"], recursive=False)
 
 
-def _is_change(text):
-    """'12 -> 10' 처럼 화살표 양쪽에 숫자가 있는 수치 변경인지 ('보관함 -> 기타' 제외)."""
-    return bool(re.search(r"\d[^>]*->.*\d", text))
+def _is_sentence(text):
+    return bool(re.search(r"(니다|다)[.!]?(\s*\([^)]*\))?$", text))
 
 
-def _changes(li, prefix=""):
-    """li 트리에서 수치 변경 사항을 '라벨 변경내용' 형태로 평탄화."""
+def _keep_leaf(text, ancestors, strict):
+    """변경 사항으로 남길 줄인지.
+
+    strict: 실험체/아이템 소속이 아닌 일반 목록. 이때는 수치 변경과 신규/삭제만 남긴다
+    ('보관함 -> 기타' 같은 메뉴 경로, 지역별 아이템 개수표 등 제외).
+    """
+    if "->" in text:
+        return not strict or bool(re.search(r"\d[^>]*->.*\d", text))
+    if NEW_OR_REMOVED.search(text):
+        return True
+    if strict or len(text) > 60 or _is_sentence(text) or not re.search(r"\d", text):
+        return False
+    # 신규 아이템 능력치, '방어력 +2', '받는 피해량 115%', '100스택 획득' 같은 설정값
+    return bool(
+        UNIT.search(text) or re.search(r"\+\d", text)
+        or any(re.search(r"능력치|신규", a) for a in ancestors)
+    )
+
+
+def _changes(li, ancestors=(), strict=False):
+    """li 트리에서 변경 사항을 '라벨 변경내용' 형태로 평탄화."""
     label = _own_text(li)
     sub = _sub_list(li)
     if not sub:
-        return [f"{prefix}{label}".strip()] if _is_change(label) else []
+        return [label] if label and _keep_leaf(label, ancestors, strict) else []
     out = []
+    if "[고유" in label and (NEW_OR_REMOVED.search(label) or any("신규" in a for a in ancestors)):
+        return [label]  # 새 고유 효과는 이름만 (설명 문장 생략)
+    if NEW_OR_REMOVED.search(label):
+        out.append(label)
+    prefix = "" if label == "능력치" else f"{label} "
     for child in sub.find_all("li", recursive=False):
-        out += _changes(child, f"{prefix}{label} ")
+        out += [f"{prefix}{c}" for c in _changes(child, (*ancestors, label), strict)]
     return out
 
 
@@ -62,12 +101,22 @@ def _is_bold_title(p):
     return bool(text) and strong is not None and _text(strong) == text and len(text) <= 30
 
 
+def _starts_bold(p):
+    """'<strong>스킨 이름</strong> 스킨이 출시됩니다.' 처럼 굵은 글씨로 시작하는 짧은 안내."""
+    strong = p.find("strong")
+    text = _text(p)
+    if strong is None or not text or len(text) > 80 or text.startswith("["):
+        return False
+    bold = _text(strong)
+    return bool(bold) and text.startswith(bold) and text != bold
+
+
 def _numbers(s):
-    return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
+    return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s.replace(",", ""))]
 
 
 def _numeric_tag(change):
-    if "->" not in change:
+    if "->" not in change or NO_TAG.search(change):
         return 0
     before, after = change.split("->", 1)
     nb, na = _numbers(before), _numbers(after)
@@ -109,121 +158,166 @@ def classify(comment, changes):
     return None
 
 
-class _Entity:
-    def __init__(self, name):
-        self.name, self.comment, self.changes = name, None, []
-
-    def line(self):
-        tag = classify(self.comment, self.changes)
-        body = ", ".join(self.changes)
-        return f"{self.name} - {body}" + (f"**({tag})**" if tag else "")
+def _entry(name, changes, comment=None):
+    tag = classify(comment, changes)
+    return f"{name} - {', '.join(changes)}" + (f"**({tag})**" if tag else "")
 
 
-def summarize(html, version=None):
+def _split_item(change):
+    """'드라우프니르 스킬 증폭 75 -> 76' → '드라우프니르 - 스킬 증폭 75 -> 76'."""
+    parts = STAT_START.split(change, maxsplit=1)
+    if len(parts) == 2 and parts[0]:
+        return _entry(parts[0], [parts[1]])
+    tag = classify(None, [change])
+    return change + (f"**({tag})**" if tag else "")
+
+
+def _title_info(soup):
+    """'13.0 패치노트 Part.1 - 메인 (2026.11.12)' → ('13.0', 'Part.1 - 메인')."""
+    title = soup.select_one(".er-article-detail__title")
+    text = _text(title) if title else ""
+    m = re.search(r"(\d+\.\d+(?:\.\d+)?[a-z]?)\s*(?:패치\s?노트|핫픽스|업데이트)", text)
+    version = m.group(1) if m else ""
+    part = ""
+    if m:
+        part = re.sub(r"\(\d{4}\.\d{1,2}\.\d{1,2}\)", "", text[m.end():]).strip(" -")
+    return version, part
+
+
+class _Section:
+    """h5 섹션 하나를 읽으며 요약 줄을 만든다."""
+
+    def __init__(self, title):
+        self.title = title
+        self.lines = []
+        self.entity = None  # [이름, 코멘트, 변경목록]
+        self.category = None  # 아직 출력하지 않은 분류 제목
+        self.in_category = False
+        self.has_categories = False
+        self.after_heading = False  # 바로 위가 h3 소제목이면 들여쓰기
+        self.allow_categories = bool(CATEGORY_SECTIONS.search(title))
+
+    def emit(self, line):
+        if self.category:
+            self.lines.append(f"**{self.category}**")
+            self.category = None
+        self.lines.append(line)
+
+    def flush(self):
+        if self.entity and self.entity[2]:
+            self.emit(_entry(self.entity[0], self.entity[2], self.entity[1]))
+        self.entity = None
+
+    def heading(self, el):
+        self.flush()
+        self.category, self.in_category = None, False
+        text = _text(el)
+        if text:
+            indent = "  " if el.name == "h4" and self.after_heading else ""
+            self.lines.append(f"{indent}- {text}")
+            self.after_heading = True
+
+    def paragraph(self, el):
+        text = _text(el)
+        if not text:
+            return
+        if _is_bold_title(el):
+            self.flush()
+            self.after_heading = False
+            nxt = el.find_next_sibling(lambda t: isinstance(t, Tag) and _text(t))
+            if self.allow_categories and nxt is not None and nxt.name == "ul" and (
+                self.has_categories or all(_sub_list(li) for li in nxt.find_all("li", recursive=False))
+            ):
+                self.category, self.in_category, self.has_categories = text, True, True
+            else:
+                self.entity, self.in_category = [text, None, []], False
+            return
+        if self.entity and not self.entity[2] and self.entity[1] is None:
+            self.entity[1] = text  # 이름 바로 다음 문단 = 개발자 코멘트
+        elif not self.entity and _starts_bold(el):
+            self.emit(f"- {text}")
+
+    def bullet_list(self, el):
+        for li in el.find_all("li", recursive=False):
+            label = _own_text(li)
+            if self.entity is not None and not self.in_category:
+                self.entity[2] += _changes(li)
+            elif _sub_list(li):
+                # 전술 스킬/아이템/음식: 최상위 항목이 이름
+                if _is_sentence(label) or len(label) > 40:
+                    continue  # 이름이 아니라 설명 문장 + 예시 목록
+                changes = []
+                for child in _sub_list(li).find_all("li", recursive=False):
+                    changes += _changes(child, (label,))
+                if NEW_OR_REMOVED.search(label) and not changes:
+                    self.emit(f"- {label}")
+                elif changes:
+                    self.emit(_entry(label, changes))
+            elif self.in_category and _keep_leaf(label, (), strict=False):
+                self.emit(_split_item(label))
+            elif _keep_leaf(label, (), strict=True):
+                # 특정 대상에 속하지 않은 변경(랭크 포인트 등)이라 버프/너프는 붙이지 않음
+                indent = "  " if self.after_heading else ""
+                self.emit(f"{indent}- {label}")
+
+    def finish(self, h5):
+        self.flush()
+        if not self.lines:
+            # 내용을 못 뽑은 섹션은 첫 안내 문장으로 대신
+            for el in h5.find_next_siblings():
+                if el.name == "h5":
+                    break
+                for node in ([el] if el.name == "p" else el.find_all("li") if el.name == "ul" else []):
+                    text = _own_text(node) if node.name == "li" else _text(node)
+                    if _is_sentence(text) and len(text) <= 150:
+                        return [f"- {text}"]
+        return self.lines
+
+
+def summarize(html):
     """패치노트 HTML 을 마크다운 줄 목록으로. 구조를 못 찾으면 None."""
     soup = BeautifulSoup(html, "html.parser")
     content = soup.select_one(".er-article-content")
     if content is None or not content.select("h5.er-point-title"):
         return None
 
-    if version is None:
-        title = soup.select_one(".er-article-detail__title")
-        m = re.search(r"(\d+\.\d+(?:\.\d+)?[a-z]?)\s*(?:패치|핫픽스|업데이트)", _text(title) if title else "")
-        version = m.group(1) if m else ""
+    version, part = _title_info(soup)
+    title = f"# 이리 {version}버전 업데이트 패치 내역" if version else "# 이리 업데이트 패치 내역"
+    out = [f"{title} {part}".strip()]
 
-    sections = []  # [(제목, [줄])]
-    lines = None
-    entity = None
-    category_mode = False  # 지금 굵은 제목이 '옷' 같은 분류 제목인지
-    has_categories = False  # 이 섹션에 분류 제목이 나온 적 있는지
-
-    def flush():
-        nonlocal entity
-        if entity and entity.changes:
-            lines.append(entity.line())
-        entity = None
-
+    section, h5 = None, None
     for el in content.children:
         if isinstance(el, NavigableString) or not isinstance(el, Tag):
             continue
         if el.name == "h5" and "er-point-title" in (el.get("class") or []):
-            if lines is not None:
-                flush()
-            lines = []
-            sections.append((_text(el), lines))
-            category_mode = has_categories = False
-            continue
-        if lines is None:
-            continue  # 첫 섹션 이전 안내문
-
-        if el.name in ("h2", "h3", "h4"):
-            flush()
-            category_mode = False
-            if _text(el):
-                lines.append(f"- {_text(el)}")
-            continue
-
-        if el.name == "p":
-            text = _text(el)
-            if not text:
-                continue
-            if _is_bold_title(el):
-                flush()
-                nxt = el.find_next_sibling(lambda t: isinstance(t, Tag) and _text(t))
-                # '옷', '팔/장식' 처럼 바로 하위 항목 목록이 오는 분류 제목
-                if nxt is not None and nxt.name == "ul" and (has_categories or all(
-                    _sub_list(li) for li in nxt.find_all("li", recursive=False)
-                )):
-                    lines.append(f"**{text}**")
-                    category_mode = has_categories = True
-                else:
-                    entity = _Entity(text)
-                    category_mode = False
-            elif entity and not entity.changes and entity.comment is None:
-                entity.comment = text
-            elif not entity and el.find("strong") and len(text) <= 80:
-                # 스킨 출시 등 일반 안내: 굵은 글씨로 시작하는 짧은 문장
-                lines.append(f"- {text}")
-            continue
-
-        if el.name in ("ul", "ol"):
-            for li in el.find_all("li", recursive=False):
-                label = _own_text(li)
-                changes = _changes(li)
-                if entity is not None and not category_mode:
-                    entity.changes += changes
-                elif changes and _sub_list(li):
-                    # 전술 스킬/아이템: 최상위 항목이 이름
-                    e = _Entity(label)
-                    e.changes = [c[len(label):].strip() for c in changes]
-                    lines.append(e.line())
-                elif changes and category_mode:
-                    tag = classify(None, changes)
-                    lines.append(changes[0] + (f"**({tag})**" if tag else ""))
-                elif changes:
-                    lines.append(f"  - {changes[0]}")
-            continue
-
-    if lines is not None:
-        flush()
-
-    # 버그 수정처럼 항목이 많은 섹션은 소제목+건수로 축약
-    out = [f"# 이리 {version}버전 업데이트 패치 내역" if version else "# 이리 업데이트 패치 내역"]
-    for title, body in sections:
-        if re.search(r"버그", title):
-            body = _bug_counts(content, title) or body
-        if not body:
-            continue
-        out.append(f"## {title}")
-        prev = None
-        for line in body:
-            # 대상(실험체/아이템)이 바뀔 때마다 빈 줄로 구분
-            if _is_entry(line) or line.startswith("**"):
-                if prev is not None and _is_entry(prev):
-                    out.append("")
-            out.append(line)
-            prev = line
+            if section:
+                _append_section(out, section, h5)
+            section, h5 = _Section(_text(el)), el
+        elif section is None:
+            # 첫 섹션 전 공지 (점검 시간, 루트 초기화 안내 등)
+            if el.name in ("h2", "h3", "h4") and _text(el):
+                out.append(f"- {_text(el)}")
+        elif el.name in ("h2", "h3", "h4"):
+            section.heading(el)
+        elif el.name == "p":
+            section.paragraph(el)
+        elif el.name in ("ul", "ol"):
+            section.bullet_list(el)
+    if section:
+        _append_section(out, section, h5)
     return out
+
+
+def _append_section(out, section, h5):
+    body = _bug_counts(h5) if re.search(r"버그", section.title) else section.finish(h5)
+    out.append(f"## {section.title}")
+    prev = None
+    for line in body:
+        # 대상(실험체/아이템)이 바뀔 때마다 빈 줄로 구분
+        if (_is_entry(line) or line.startswith("**")) and prev is not None and _is_entry(prev):
+            out.append("")
+        out.append(line)
+        prev = line
 
 
 def _is_entry(line):
@@ -231,11 +325,8 @@ def _is_entry(line):
     return bool(line) and not line.startswith(("#", "-", " ", "**"))
 
 
-def _bug_counts(content, section_title):
-    """balance 가 아닌 섹션에서 h3 소제목별 항목 수."""
-    h5 = next((h for h in content.select("h5.er-point-title") if _text(h) == section_title), None)
-    if h5 is None:
-        return []
+def _bug_counts(h5):
+    """버그 수정 섹션: h3 소제목별 항목 수."""
     out, current, count = [], None, 0
     for el in h5.find_next_siblings():
         if el.name == "h5":
