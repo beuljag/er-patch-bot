@@ -10,6 +10,10 @@ on:
         type: choice
         options: [once, test, send-latest]
         default: once
+      ids:
+        description: "다시 보낼 공식 홈페이지 글 번호 (예: 3948,3949). 입력하면 mode 대신 이 글들을 전송"
+        type: string
+        default: ""
 
 permissions:
   contents: write  # state.json(이미 보낸 글 기록) 저장용
@@ -36,7 +40,14 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           PATCH_SOURCES: ${{ vars.PATCH_SOURCES || 'official' }}
           DISCORD_MENTION: ${{ vars.DISCORD_MENTION }}
-        run: python patch_notifier.py --${{ inputs.mode || 'once' }}
+          MODE: ${{ inputs.mode || 'once' }}
+          IDS: ${{ inputs.ids }}
+        run: |
+          if [ -n "$IDS" ]; then
+            python patch_notifier.py --send-ids "$IDS"
+          else
+            python patch_notifier.py "--$MODE"
+          fi
 
       - name: 기록 저장
         run: |

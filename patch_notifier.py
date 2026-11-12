@@ -10,6 +10,7 @@
   python patch_notifier.py --once     # 한 번만 확인하고 종료 (작업 스케줄러/크론용)
   python patch_notifier.py --test     # 디스코드 전송 없이 현재 감지되는 글 목록만 출력
   python patch_notifier.py --send-latest  # 가장 최근 패치노트 1개를 지금 바로 전송 (웹훅 테스트)
+  python patch_notifier.py --send-ids 3948,3949  # 글 번호를 지정해 다시 전송
 """
 
 import argparse
@@ -92,26 +93,27 @@ def fetch_official():
     """패치노트 게시판에서 글 ID를 모아 최신순으로 반환."""
     html = requests.get(OFFICIAL_LIST_URL, headers=HEADERS, timeout=TIMEOUT).text
     ids = sorted({int(x) for x in re.findall(r"/posts/news/(\d+)", html)}, reverse=True)
-    posts = []
-    for post_id in ids[:5]:
-        url = OFFICIAL_POST_URL.format(id=post_id)
-        title, image, page = None, None, None
-        try:
-            page = requests.get(url, headers=HEADERS, timeout=TIMEOUT).text
-            title = _meta(page, "og:title")
-            image = _meta(page, "og:image")
-        except requests.RequestException:
-            pass
-        posts.append({
-            "id": f"official:{post_id}",
-            "title": title or f"패치노트 #{post_id}",
-            "url": url.replace("?hl=ko-KR", ""),
-            "image": image,
-            "date": None,
-            "source": "공식 홈페이지",
-            "html": page,
-        })
-    return posts
+    return [fetch_official_post(post_id) for post_id in ids[:5]]
+
+
+def fetch_official_post(post_id):
+    url = OFFICIAL_POST_URL.format(id=post_id)
+    title, image, page = None, None, None
+    try:
+        page = requests.get(url, headers=HEADERS, timeout=TIMEOUT).text
+        title = _meta(page, "og:title")
+        image = _meta(page, "og:image")
+    except requests.RequestException:
+        pass
+    return {
+        "id": f"official:{post_id}",
+        "title": title or f"패치노트 #{post_id}",
+        "url": url.replace("?hl=ko-KR", ""),
+        "image": image,
+        "date": None,
+        "source": "공식 홈페이지",
+        "html": page,
+    }
 
 
 # ---------------------------------------------------------------- 소스: Steam
@@ -242,6 +244,7 @@ def main():
     parser.add_argument("--once", action="store_true", help="한 번만 확인하고 종료")
     parser.add_argument("--test", action="store_true", help="전송 없이 감지된 글만 출력")
     parser.add_argument("--send-latest", action="store_true", help="최신 패치노트 1개 즉시 전송")
+    parser.add_argument("--send-ids", help="공식 홈페이지 글 번호를 지정해 다시 전송 (예: 3948,3949)")
     args = parser.parse_args()
 
     config = load_config()
@@ -270,6 +273,15 @@ def main():
                 log(f"전송: {posts[0]['title']}")
                 return
         sys.exit("가져온 패치노트가 없습니다.")
+
+    if args.send_ids:
+        for post_id in re.findall(r"\d+", args.send_ids):
+            post = fetch_official_post(int(post_id))
+            if not post["html"]:
+                sys.exit(f"{post_id}번 글을 가져오지 못했습니다.")
+            send_to_discord(config["webhook_url"], post, config.get("mention", ""))
+            log(f"전송: {post['title']}")
+        return
 
     state = load_state()
     if args.once:
